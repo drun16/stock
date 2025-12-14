@@ -13,19 +13,24 @@ function App() {
   const [subscribedStocks, setSubscribedStocks] = useState([]);
   const [stockPrices, setStockPrices] = useState({});
 
-  // 1. SETUP SOCKET LISTENERS
-  useEffect(() => {
-    // Listen for price updates from the server
-    socket.on('priceUpdate', (prices) => {
-      console.log("Price update received:", prices);
-      setStockPrices((prevPrices) => ({ ...prevPrices, ...prices }));
-    });
+// 1. SETUP SOCKET LISTENERS
+useEffect(() => {
+  // Listen for price updates
+  socket.on('priceUpdate', (prices) => {
+    setStockPrices((prevPrices) => ({ ...prevPrices, ...prices }));
+  });
 
-    // Cleanup listener when app closes
-    return () => {
-      socket.off('priceUpdate');
-    };
-  }, []);
+  // --- NEW: Listen for history loading ---
+  socket.on('loadSubscriptions', (savedStocks) => {
+    console.log("Loaded history:", savedStocks);
+    setSubscribedStocks(savedStocks);
+  });
+
+  return () => {
+    socket.off('priceUpdate');
+    socket.off('loadSubscriptions'); // Clean up listener
+  };
+}, []);
 
   // 2. HANDLERS
   const handleLogin = (e) => {

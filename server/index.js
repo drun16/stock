@@ -9,8 +9,6 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-
-// Initialize Socket.io with CORS enabled
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:3000",
@@ -19,65 +17,81 @@ const io = new Server(server, {
 });
 
 // ---------------------------------------------------------
-// 1. DATA STATE
+// 1. DATA STORAGE
 // ---------------------------------------------------------
 const SUPPORTED_STOCKS = ['GOOG', 'TSLA', 'AMZN', 'META', 'NVDA'];
-
-// Holds current prices
 let stockPrices = {};
 
-// Holds user subscriptions.
-// Structure: { "socket_id": { email: "user@test.com", stocks: ["GOOG", "TSLA"] } }
-let userSubscriptions = {}; 
+// MOCK DATABASE: Stores history by EMAIL
+// Structure: { "user@test.com": ["GOOG", "TSLA"] }
+let userDatabase = {}; 
+
+// ACTIVE SESSIONS: Maps socket ID to Email
+// Structure: { "socket_id_123": "user@test.com" }
+let activeConnections = {};
 
 // Initialize prices
 SUPPORTED_STOCKS.forEach(stock => stockPrices[stock] = 100.00);
 
 // ---------------------------------------------------------
-// 2. SOCKET.IO EVENT HANDLING
+// 2. SOCKET EVENT HANDLING
 // ---------------------------------------------------------
 io.on('connection', (socket) => {
   console.log(`User Connected: ${socket.id}`);
 
-  // Initialize this user in our state
-  userSubscriptions[socket.id] = { email: null, stocks: [] };
-
   // Event: User Logs in
   socket.on('login', (email) => {
-    userSubscriptions[socket.id].email = email;
-    console.log(`User ${socket.id} logged in as ${email}`);
+    // 1. Map this socket to the email
+    activeConnections[socket.id] = email;
+    console.log(`Socket ${socket.id} mapped to user ${email}`);
+
+    // 2. Check if user exists in "Database", if not, create them
+    if (!userDatabase[email]) {
+      userDatabase[email] = [];
+    }
+
+    // 3. Send their saved history back to the frontend immediately!
+    const savedSubscriptions = userDatabase[email];
+    socket.emit('loadSubscriptions', savedSubscriptions);
   });
 
-  // Event: User Subscribes to a stock
+  // Event: Subscribe
   socket.on('subscribe', (stockSymbol) => {
-    if (SUPPORTED_STOCKS.includes(stockSymbol)) {
-      const user = userSubscriptions[socket.id];
-      if (!user.stocks.includes(stockSymbol)) {
-        user.stocks.push(stockSymbol);
-        console.log(`User ${user.email} subscribed to ${stockSymbol}`);
+    const email = activeConnections[socket.id]; // Find who this socket is
+    
+    if (email && SUPPORTED_STOCKS.includes(stockSymbol)) {
+      // Add to persistent database
+      if (!userDatabase[email].includes(stockSymbol)) {
+        userDatabase[email].push(stockSymbol);
+        console.log(`Saved subscription: ${email} -> ${stockSymbol}`);
       }
     }
   });
 
-  // Event: User Unsubscribes
+  // Event: Unsubscribe
   socket.on('unsubscribe', (stockSymbol) => {
-    const user = userSubscriptions[socket.id];
-    user.stocks = user.stocks.filter(s => s !== stockSymbol);
-    console.log(`User ${user.email} unsubscribed from ${stockSymbol}`);
+    const email = activeConnections[socket.id];
+    
+    if (email) {
+      // Remove from persistent database
+      userDatabase[email] = userDatabase[email].filter(s => s !== stockSymbol);
+      console.log(`Removed subscription: ${email} -> ${stockSymbol}`);
+    }
   });
 
   // Event: Disconnect
   socket.on('disconnect', () => {
+    // We only remove the active connection map, NOT the database data!
+    delete activeConnections[socket.id];
     console.log(`User Disconnected: ${socket.id}`);
-    delete userSubscriptions[socket.id]; 
   });
 });
 
 // ---------------------------------------------------------
-// 3. STOCK ENGINE (UPDATED)
+// 3. STOCK ENGINE
 // ---------------------------------------------------------
 function updateStockPrices() {
-  // 1. Update the prices
+  // Update prices logic
   SUPPORTED_STOCKS.forEach(stock => {
     const changePercent = (Math.random() * 0.04) - 0.02; 
     let newPrice = stockPrices[stock] + (stockPrices[stock] * changePercent);
@@ -85,29 +99,27 @@ function updateStockPrices() {
     stockPrices[stock] = parseFloat(newPrice.toFixed(2));
   });
 
-  // 2. PUSH updates to clients based on their subscriptions
+  // Push updates
   io.sockets.sockets.forEach((socket) => {
-    const socketId = socket.id;
-    const userData = userSubscriptions[socketId];
-
-    if (userData && userData.stocks.length > 0) {
+    const email = activeConnections[socket.id];
+    
+    // If this socket is logged in (has an email)
+    if (email) {
+      const userStocks = userDatabase[email];
       
-      // FIX: Removed space in variable name
-      const userSpecificPrices = {};
-      userData.stocks.forEach(stock => {
-        userSpecificPrices[stock] = stockPrices[stock];
-      });
-
-      socket.emit('priceUpdate', userSpecificPrices);
+      if (userStocks && userStocks.length > 0) {
+        const userSpecificPrices = {};
+        userStocks.forEach(stock => {
+          userSpecificPrices[stock] = stockPrices[stock];
+        });
+        socket.emit('priceUpdate', userSpecificPrices);
+      }
     }
   });
 }
 
 setInterval(updateStockPrices, 1000);
 
-// ---------------------------------------------------------
-// SERVER START
-// ---------------------------------------------------------
 const PORT = 4000;
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
